@@ -34,8 +34,8 @@ Aplicativo mobile desenvolvido em **React Native** com **Expo** para rastreament
 
 1. **Clonar o repositório:**
    ```bash
-   git clone [https://github.com/seu-usuario/seu-repositorio.git](https://github.com/seu-usuario/seu-repositorio.git)
-   cd seu-repositorio
+   git clone https://github.com/heloisagpaixao/Registrador-de-Trajeto.git
+   cd Registrador-de-Trajeto
 
 2. **Instalar as dependências:**
    ```bash
