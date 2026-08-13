@@ -1,21 +1,20 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from "react";
 import {
   StyleSheet,
   Text,
   View,
   TouchableOpacity,
-  SafeAreaView,
   Alert,
   Platform,
-  Dimensions,
   ScrollView,
-} from 'react-native';
-import * as Location from 'expo-location';
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import * as Location from "expo-location";
 
 // Fallback visual para Web ou ambientes sem react-native-maps nativo
 let MapView, Polyline, Marker;
 try {
-  const Maps = require('react-native-maps');
+  const Maps = require("react-native-maps");
   MapView = Maps.default;
   Polyline = Maps.Polyline;
   Marker = Maps.Marker;
@@ -23,11 +22,11 @@ try {
   MapView = null;
 }
 
-const { width } = Dimensions.get('window');
+// --- Funções Auxiliares (Fora do componente para evitar recriação) ---
 
-// Função auxiliar para calcular distância entre duas coordenadas em km (Fórmula de Haversine)
+// Fórmula de Haversine para calcular distância (km)
 function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // Raio da Terra em km
+  const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
   const a =
@@ -36,8 +35,22 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
       Math.cos((lat2 * Math.PI) / 180) *
       Math.sin(dLon / 2) *
       Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+
+// Formatação de tempo (HH:MM:SS)
+function formatTime(seconds) {
+  const hrs = String(Math.floor(seconds / 3600)).padStart(2, "0");
+  const mins = String(Math.floor((seconds % 3600) / 60)).padStart(2, "0");
+  const secs = String(seconds % 60).padStart(2, "0");
+  return `${hrs}:${mins}:${secs}`;
+}
+
+// Retorna o texto e a cor do badge de acordo com o estado do app
+function getStatusInfo(isRecording, isPaused) {
+  if (!isRecording) return { text: "⏹️ Parado", bg: "#3A2521" };
+  if (isPaused) return { text: "⏸️ Pausado", bg: "#F59E0B" };
+  return { text: "🔴 Gravando Trajeto...", bg: "#EF4444" };
 }
 
 export default function Rastreadortrajeto() {
@@ -46,36 +59,36 @@ export default function Rastreadortrajeto() {
   const [isPaused, setIsPaused] = useState(false);
   const [locationHistory, setLocationHistory] = useState([]);
   const [currentLocation, setCurrentLocation] = useState(null);
-  const [totalDistance, setTotalDistance] = useState(0); // em km
-  const [elapsedTime, setElapsedTime] = useState(0); // em segundos
-  const [currentSpeed, setCurrentSpeed] = useState(0); // em km/h
+  const [totalDistance, setTotalDistance] = useState(0);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [currentSpeed, setCurrentSpeed] = useState(0);
 
   const locationSubscription = useRef(null);
   const timerRef = useRef(null);
   const mapRef = useRef(null);
+  const lastPointRef = useRef(null);
 
-  // Solicitar permissão de localização ao carregar
+  // Solicitar permissão ao carregar o componente
   useEffect(() => {
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
+      if (status !== "granted") {
         setHasPermission(false);
         Alert.alert(
-          'Permissão negada',
-          'A permissão para acessar a localização em segundo plano/primeiro plano é necessária para registrar o trajeto.'
+          "Permissão necessária",
+          "A permissão de localização é necessária para registrar o trajeto.",
         );
         return;
       }
       setHasPermission(true);
 
-      // Pegar localização atual
       try {
         const initialLoc = await Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.High,
         });
         setCurrentLocation(initialLoc.coords);
       } catch (err) {
-        console.warn('Erro ao obter posição inicial:', err);
+        console.warn("Erro ao obter posição inicial:", err);
       }
     })();
 
@@ -85,9 +98,9 @@ export default function Rastreadortrajeto() {
     };
   }, []);
 
-  // Timer do tempo decorrido
+  // Timers
   const startTimer = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
+    stopTimer();
     timerRef.current = setInterval(() => {
       setElapsedTime((prev) => prev + 1);
     }, 1000);
@@ -100,41 +113,40 @@ export default function Rastreadortrajeto() {
     }
   };
 
-  // Iniciar monitoramento GPS em tempo real
+  // Monitoramento GPS
   const startTracking = async () => {
     try {
       locationSubscription.current = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.BestForNavigation,
-          timeInterval: 2000, // Atualiza a cada 2 segundos
-          distanceInterval: 3, // Ou a cada 3 metros
+          timeInterval: 2000,
+          distanceInterval: 3,
         },
         (loc) => {
           const { latitude, longitude, speed } = loc.coords;
           const newPoint = { latitude, longitude, timestamp: loc.timestamp };
 
           setCurrentLocation(loc.coords);
-          setCurrentSpeed(speed ? Math.max(0, speed * 3.6) : 0); // converter m/s para km/h
+          setCurrentSpeed(speed ? Math.max(0, speed * 3.6) : 0);
 
-          setLocationHistory((prev) => {
-            if (prev.length > 0) {
-              const lastPoint = prev[prev.length - 1];
-              const dist = calculateDistance(
-                lastPoint.latitude,
-                lastPoint.longitude,
-                latitude,
-                longitude
-              );
-              if (dist > 0.002) { // ignora pequenas oscilações menores que 2 metros
-                setTotalDistance((prevDist) => prevDist + dist);
-                return [...prev, newPoint];
-              }
-              return prev;
+          if (lastPointRef.current) {
+            const dist = calculateDistance(
+              lastPointRef.current.latitude,
+              lastPointRef.current.longitude,
+              latitude,
+              longitude,
+            );
+
+            if (dist > 0.002) {
+              setTotalDistance((prev) => prev + dist);
+              setLocationHistory((prev) => [...prev, newPoint]);
+              lastPointRef.current = newPoint;
             }
-            return [newPoint];
-          });
+          } else {
+            lastPointRef.current = newPoint;
+            setLocationHistory((prev) => [...prev, newPoint]);
+          }
 
-          // Animar mapa para o ponto atual
           if (mapRef.current) {
             mapRef.current.animateToRegion(
               {
@@ -143,14 +155,14 @@ export default function Rastreadortrajeto() {
                 latitudeDelta: 0.005,
                 longitudeDelta: 0.005,
               },
-              1000
+              1000,
             );
           }
-        }
+        },
       );
     } catch (err) {
-      console.error('Erro ao iniciar rastreamento:', err);
-      Alert.alert('Erro', 'Não foi possível iniciar o rastreamento GPS.');
+      console.error("Erro ao iniciar rastreamento:", err);
+      Alert.alert("Erro", "Não foi possível iniciar o rastreamento GPS.");
     }
   };
 
@@ -161,7 +173,7 @@ export default function Rastreadortrajeto() {
     }
   };
 
-  // Ações dos botões
+  // Handlers dos botões
   const handleStart = () => {
     setIsRecording(true);
     setIsPaused(false);
@@ -186,7 +198,12 @@ export default function Rastreadortrajeto() {
     setIsPaused(false);
     stopTimer();
     stopTracking();
-    Alert.alert('Trajeto Finalizado', `Distância total: ${totalDistance.toFixed(2)} km\nTempo: ${formatTime(elapsedTime)}`);
+    Alert.alert(
+      "Trajeto Finalizado",
+      `Distância total: ${totalDistance.toFixed(2)} km\nTempo: ${formatTime(
+        elapsedTime,
+      )}`,
+    );
   };
 
   const handleReset = () => {
@@ -198,45 +215,27 @@ export default function Rastreadortrajeto() {
     setTotalDistance(0);
     setElapsedTime(0);
     setCurrentSpeed(0);
+    lastPointRef.current = null;
   };
 
-  // Formatação do tempo decorrido (HH:MM:SS)
-  const formatTime = (seconds) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-    return `${hrs.toString().padStart(2, '0')}:${mins
-      .toString()
-      .padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  // Região inicial do Mapa
+  const initialRegion = {
+    latitude: currentLocation?.latitude ?? -23.55052,
+    longitude: currentLocation?.longitude ?? -46.633308,
+    latitudeDelta: currentLocation ? 0.01 : 0.05,
+    longitudeDelta: currentLocation ? 0.01 : 0.05,
   };
 
-  const initialRegion = currentLocation
-    ? {
-        latitude: currentLocation.latitude,
-        longitude: currentLocation.longitude,
-        latitudeDelta: 0.01,
-        longitudeDelta: 0.01,
-      }
-    : {
-        latitude: -23.55052,
-        longitude: -46.633308,
-        latitudeDelta: 0.05,
-        longitudeDelta: 0.05,
-      };
+  const statusInfo = getStatusInfo(isRecording, isPaused);
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Cabeçalho de Status e Métricas */}
+      {/* Cabeçalho */}
       <View style={styles.headerCard}>
-        <Text style={styles.headerTitle}>📍 Registrador de Trajeto</Text>
-        <View style={styles.statusBadge(isRecording, isPaused)}>
-          <Text style={styles.statusText}>
-            {isRecording
-              ? isPaused
-                ? '⏸️ Pausado'
-                : '🔴 Gravando Trajeto...'
-              : '⏹️ Parado'}
-          </Text>
+        <Text style={styles.headerTitle}>🔥 Registrador de Trajeto</Text>
+
+        <View style={[styles.statusBadge, { backgroundColor: statusInfo.bg }]}>
+          <Text style={styles.statusText}>{statusInfo.text}</Text>
         </View>
 
         <View style={styles.metricsContainer}>
@@ -257,9 +256,9 @@ export default function Rastreadortrajeto() {
         </View>
       </View>
 
-      {/* Exibição do Mapa ou Fallback */}
+      {/* Exibição do Mapa ou Fallback Web */}
       <View style={styles.mapContainer}>
-        {MapView && Platform.OS !== 'web' ? (
+        {MapView && Platform.OS !== "web" ? (
           <MapView
             ref={mapRef}
             style={styles.map}
@@ -267,25 +266,20 @@ export default function Rastreadortrajeto() {
             showsUserLocation
             followsUserLocation
           >
-            {/* Linha do Trajeto */}
             {locationHistory.length > 1 && (
               <Polyline
                 coordinates={locationHistory}
-                strokeColor="#007AFF"
+                strokeColor="#FF4500"
                 strokeWidth={5}
               />
             )}
-
-            {/* Marcador de Início */}
             {locationHistory.length > 0 && (
               <Marker
                 coordinate={locationHistory[0]}
                 title="Ponto Inicial"
-                pinColor="green"
+                pinColor="orange"
               />
             )}
-
-            {/* Marcador Atual/Final */}
             {locationHistory.length > 1 && (
               <Marker
                 coordinate={locationHistory[locationHistory.length - 1]}
@@ -296,14 +290,16 @@ export default function Rastreadortrajeto() {
           </MapView>
         ) : (
           <View style={styles.webFallbackContainer}>
-            <Text style={styles.webFallbackTitle}>🗺️ Visualização de Trajeto</Text>
-            {currentLocation ? (
-              <Text style={styles.webFallbackText}>
-                Coordenada Atual: {currentLocation.latitude.toFixed(5)}, {currentLocation.longitude.toFixed(5)}
-              </Text>
-            ) : (
-              <Text style={styles.webFallbackText}>Obtendo sinal GPS...</Text>
-            )}
+            <Text style={styles.webFallbackTitle}>
+              🗺️ Visualização do Trajeto
+            </Text>
+            <Text style={styles.webFallbackText}>
+              {currentLocation
+                ? `Coordenada Atual: ${currentLocation.latitude.toFixed(
+                    5,
+                  )}, ${currentLocation.longitude.toFixed(5)}`
+                : "Obtendo sinal GPS..."}
+            </Text>
             <Text style={styles.webFallbackSub}>
               Pontos Registrados: {locationHistory.length}
             </Text>
@@ -311,7 +307,8 @@ export default function Rastreadortrajeto() {
               <ScrollView style={styles.historyList}>
                 {locationHistory.slice(-5).map((pt, idx) => (
                   <Text key={idx} style={styles.historyItem}>
-                    #{idx + 1}: {pt.latitude.toFixed(5)}, {pt.longitude.toFixed(5)}
+                    #{idx + 1}: {pt.latitude.toFixed(5)},{" "}
+                    {pt.longitude.toFixed(5)}
                   </Text>
                 ))}
               </ScrollView>
@@ -331,24 +328,21 @@ export default function Rastreadortrajeto() {
           </TouchableOpacity>
         ) : (
           <View style={styles.buttonRow}>
-            {isPaused ? (
-              <TouchableOpacity
-                style={[styles.button, styles.btnResume, { flex: 1, marginRight: 8 }]}
-                onPress={handleResume}
-              >
-                <Text style={styles.btnText}>▶️ Retomar</Text>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                style={[styles.button, styles.btnPause, { flex: 1, marginRight: 8 }]}
-                onPress={handlePause}
-              >
-                <Text style={styles.btnText}>⏸️ Pausar</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity
+              style={[
+                styles.button,
+                styles.flex1,
+                isPaused ? styles.btnResume : styles.btnPause,
+              ]}
+              onPress={isPaused ? handleResume : handlePause}
+            >
+              <Text style={styles.btnText}>
+                {isPaused ? "▶️ Retomar" : "⏸️ Pausar"}
+              </Text>
+            </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.button, styles.btnStop, { flex: 1, marginLeft: 8 }]}
+              style={[styles.button, styles.btnStop, styles.flex1, styles.ml8]}
               onPress={handleStop}
             >
               <Text style={styles.btnText}>⏹️ Finalizar</Text>
@@ -358,7 +352,7 @@ export default function Rastreadortrajeto() {
 
         {(locationHistory.length > 0 || elapsedTime > 0) && !isRecording && (
           <TouchableOpacity
-            style={[styles.button, styles.btnReset, { marginTop: 12 }]}
+            style={[styles.button, styles.btnReset, styles.mt12]}
             onPress={handleReset}
           >
             <Text style={styles.btnTextReset}>🔄 Limpar Dados</Text>
@@ -372,154 +366,168 @@ export default function Rastreadortrajeto() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F172A',
+    backgroundColor: "#120E0E",
+  },
+  flex1: {
+    flex: 1,
+  },
+  ml8: {
+    marginLeft: 8,
+  },
+  mt12: {
+    marginTop: 12,
   },
   headerCard: {
-    backgroundColor: '#1E293B',
+    backgroundColor: "#1C1412",
     padding: 16,
     borderBottomLeftRadius: 20,
     borderBottomRightRadius: 20,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#3A2521",
+    elevation: 6,
+    shadowColor: "#FF4500",
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
     zIndex: 10,
   },
   headerTitle: {
     fontSize: 22,
-    fontWeight: 'bold',
-    color: '#F8FAFC',
-    textAlign: 'center',
+    fontWeight: "bold",
+    color: "#FFF7ED",
+    textAlign: "center",
     marginBottom: 8,
   },
-  statusBadge: (isRecording, isPaused) => ({
-    alignSelf: 'center',
-    backgroundColor: isRecording
-      ? isPaused
-        ? '#EF4444'
-        : '#22C55E'
-      : '#64748B',
+  statusBadge: {
+    alignSelf: "center",
     paddingHorizontal: 14,
-    paddingVertical: 4,
+    paddingVertical: 5,
     borderRadius: 20,
     marginBottom: 16,
-  }),
+  },
   statusText: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-    fontSize: 14,
+    color: "#FFFFFF",
+    fontWeight: "bold",
+    fontSize: 13,
   },
   metricsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    backgroundColor: '#0F172A',
+    flexDirection: "row",
+    justifyContent: "space-around",
+    alignItems: "center",
+    backgroundColor: "#120E0E",
     borderRadius: 14,
     paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: "#2A1B18",
   },
   metricBox: {
-    alignItems: 'center',
+    alignItems: "center",
   },
   metricValue: {
     fontSize: 20,
-    fontWeight: 'bold',
-    color: '#38BDF8',
+    fontWeight: "bold",
+    color: "#F97316",
   },
   metricLabel: {
     fontSize: 12,
-    color: '#94A3B8',
+    color: "#FDBA74",
     marginTop: 2,
   },
   metricDivider: {
     width: 1,
     height: 30,
-    backgroundColor: '#334155',
+    backgroundColor: "#3A2521",
   },
   mapContainer: {
     flex: 1,
     marginVertical: 10,
     borderRadius: 16,
-    overflow: 'hidden',
+    overflow: "hidden",
     marginHorizontal: 12,
+    borderWidth: 1,
+    borderColor: "#3A2521",
   },
   map: {
-    width: '100%',
-    height: '100%',
+    width: "100%",
+    height: "100%",
   },
   webFallbackContainer: {
     flex: 1,
-    backgroundColor: '#1E293B',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#1C1412",
+    alignItems: "center",
+    justifyContent: "center",
     padding: 20,
     borderRadius: 16,
   },
   webFallbackTitle: {
     fontSize: 18,
-    fontWeight: 'bold',
-    color: '#38BDF8',
+    fontWeight: "bold",
+    color: "#F97316",
     marginBottom: 8,
   },
   webFallbackText: {
     fontSize: 14,
-    color: '#E2E8F0',
+    color: "#FFF7ED",
     marginVertical: 4,
   },
   webFallbackSub: {
     fontSize: 13,
-    color: '#94A3B8',
+    color: "#FDBA74",
     marginTop: 4,
   },
   historyList: {
     maxHeight: 120,
     marginTop: 12,
-    width: '100%',
+    width: "100%",
   },
   historyItem: {
-    color: '#CBD5E1',
+    color: "#FED7AA",
     fontSize: 12,
-    textAlign: 'center',
+    textAlign: "center",
     marginVertical: 2,
   },
   controlsCard: {
-    backgroundColor: '#1E293B',
+    backgroundColor: "#1C1412",
     padding: 16,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
+    borderTopWidth: 1,
+    borderTopColor: "#3A2521",
   },
   buttonRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    justifyContent: "space-between",
   },
   button: {
     paddingVertical: 14,
     borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
   },
   btnStart: {
-    backgroundColor: '#22C55E',
+    backgroundColor: "#F97316",
   },
   btnPause: {
-    backgroundColor: '#EAB308',
+    backgroundColor: "#F59E0B",
   },
   btnResume: {
-    backgroundColor: '#3B82F6',
+    backgroundColor: "#EA580C",
   },
   btnStop: {
-    backgroundColor: '#EF4444',
+    backgroundColor: "#DC2626",
   },
   btnReset: {
-    backgroundColor: '#334155',
+    backgroundColor: "#2A1B18",
+    borderWidth: 1,
+    borderColor: "#3A2521",
   },
   btnText: {
-    color: '#FFFFFF',
-    fontWeight: 'bold',
+    color: "#FFFFFF",
+    fontWeight: "bold",
     fontSize: 16,
   },
   btnTextReset: {
-    color: '#94A3B8',
-    fontWeight: '600',
+    color: "#FDBA74",
+    fontWeight: "600",
     fontSize: 14,
   },
 });
